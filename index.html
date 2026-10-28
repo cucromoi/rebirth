@@ -333,7 +333,7 @@
 
 <script>
 // ===== CẤU HÌNH: dán URL Apps Script (kết thúc bằng /exec) vào đây =====
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyZsoDvbNCwc4bylhEk1mdmrE01NA6Ns7ImuKD9pJ8dwhsTAnn8fPjDJ7X27YhrX20v/exec';
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwoK8k2ZZrqEDZNPTWw6KMOJlGJtI2Z50zF-2Q_b9opgaSBs53a9B3eD-CtUy7p4SaA/exec';
 
 const $ = (id) => document.getElementById(id);
 const PW_KEY = 'kh_pw';
@@ -442,13 +442,13 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && password && Date.now() - lastLoad > 30000) load();
 });
 
-// ---- Giờ ----
+// ---- Giờ: dd/MM/yyyy HH:mm (ví dụ 27/10/2026 14:35), theo múi giờ của thiết bị ----
 function fmtTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   if (isNaN(d)) return '';
   const p = (n) => String(n).padStart(2, '0');
-  return `${p(d.getHours())}:${p(d.getMinutes())} ${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`;
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 function updateClock() {
   const c = editId ? customers.find((x) => x.id === editId) : null;
