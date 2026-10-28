@@ -10,7 +10,7 @@
 <style>
   :root {
     --bg: #eef1f6; --surface: #ffffff; --ink: #172033; --muted: #5d6882; --line: #d9dfeb;
-    --accent: #3b4bdb; --accent-soft: #e8eafc;
+    --accent: #3b4bdb; --accent-soft: #e8eafc; --on-accent: #ffffff;
     --paid: #1f8a5b; --paid-soft: #e1f4ea; --on-paid: #ffffff;
     --deposit: #a8620f; --deposit-soft: #fdf0dc;
     --danger: #c0392b;
@@ -19,7 +19,7 @@
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0f1422; --surface: #182036; --ink: #e8ecf7; --muted: #97a2bf; --line: #2a3556;
-      --accent: #7f8cff; --accent-soft: #232c5a;
+      --accent: #7f8cff; --accent-soft: #232c5a; --on-accent: #0f1422;
       --paid: #4cc38a; --paid-soft: #17352a; --on-paid: #0b1f16;
       --deposit: #f0b45a; --deposit-soft: #3a2c14;
       --danger: #ff7a6b;
@@ -80,7 +80,7 @@
   .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   button.btn { font: inherit; font-weight: 600; cursor: pointer; border-radius: 10px; padding: 11px 22px; border: 1.5px solid transparent; }
   button:disabled { opacity: .6; cursor: progress; }
-  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.primary { background: var(--accent); color: var(--on-accent); }
   .btn.primary:hover { filter: brightness(1.08); }
   .btn.ghost { background: transparent; border-color: var(--line); color: var(--ink); }
   .msg { color: var(--danger); font-weight: 500; }
@@ -118,6 +118,8 @@
   .mini:hover { background: var(--accent-soft); }
   .mini.ok { background: var(--paid); border-color: var(--paid); color: var(--on-paid); font-weight: 600; }
   .mini.ok:hover { background: var(--paid); filter: brightness(1.08); }
+  .mini.go { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+  .mini.go:hover { background: var(--accent); filter: brightness(1.08); }
   .mini.del { color: var(--danger); }
   .mini.del:hover { background: transparent; border-color: var(--danger); }
   .empty { text-align: center; color: var(--muted); padding: 36px 14px; }
@@ -156,8 +158,8 @@
 
     .list-head { margin-top: 26px; }
     .search { width: 100%; }
-    .tabs { flex-wrap: nowrap; }
-    .tab { flex: 1; padding: 11px 8px; font-size: 14.5px; }
+    .tabs { flex-wrap: nowrap; gap: 6px; }
+    .tab { flex: 1; padding: 11px 4px; font-size: 13.5px; white-space: nowrap; }
 
     .tablebox { overflow: visible; border: none; border-radius: 0; background: transparent; }
     table, tbody { display: block; width: 100%; min-width: 0; }
@@ -194,7 +196,7 @@
 
     .row-actions { gap: 8px; }
     .row-actions .mini { flex: 1; min-height: 42px; font-size: 15px; padding: 8px 12px; }
-    .row-actions .mini.ok, .row-actions .mini[data-unorder] { flex: 1 1 100%; }
+    .row-actions .mini.ok, .row-actions .mini.go { flex: 1 1 100%; }
 
     td.empty { padding: 28px 8px; text-align: center; }
     tr:has(td.empty) { background: transparent; border: none; padding: 0; }
@@ -302,14 +304,15 @@
 
   <div class="tabs" role="tablist">
     <button class="tab" id="tabPending" role="tab" type="button" data-tab="pending" aria-selected="true">Chưa order (0)</button>
-    <button class="tab" id="tabDone" role="tab" type="button" data-tab="done" aria-selected="false">Đã order (0)</button>
+    <button class="tab" id="tabOrdered" role="tab" type="button" data-tab="ordered" aria-selected="false">Đã order (0)</button>
+    <button class="tab" id="tabArrived" role="tab" type="button" data-tab="arrived" aria-selected="false">Hàng về (0)</button>
   </div>
 
   <div class="tablebox">
     <table>
       <thead>
         <tr>
-          <th>Thời gian thêm</th>
+          <th>Thời gian</th>
           <th>Khách hàng</th>
           <th>Tổng tiền</th>
           <th>Thanh toán</th>
@@ -333,7 +336,7 @@
 
 <script>
 // ===== CẤU HÌNH: dán URL Apps Script (kết thúc bằng /exec) vào đây =====
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwoK8k2ZZrqEDZNPTWw6KMOJlGJtI2Z50zF-2Q_b9opgaSBs53a9B3eD-CtUy7p4SaA/exec';
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxKqeG1Xhd_ycHLgFre3g-1vILXGInjmniIlQeUcINAWeMfR2J3-u_dlbUBqaXHpUlQ/exec';
 
 const $ = (id) => document.getElementById(id);
 const PW_KEY = 'kh_pw';
@@ -342,7 +345,7 @@ let customers = [];
 let editId = null;
 let platform = '';
 let flashId = null;
-let tab = 'pending'; // 'pending' = chưa order, 'done' = đã order
+let tab = 'pending'; // pending = Chưa order, ordered = Đã order, arrived = Hàng về
 let working = false;
 let lastLoad = 0;
 
@@ -352,6 +355,18 @@ const toNum = (s) => Number(digits(s)) || 0;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd');
 const sortList = (list) => list.slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+const st = (c) => (c.status === 'pending' || c.status === 'ordered' || c.status === 'arrived') ? c.status : (c.ordered ? 'ordered' : 'pending');
+
+const STATUS_MSG = {
+  pending: (n) => `Đã chuyển "${n}" về danh sách Chưa order`,
+  ordered: (n) => `Đã chuyển "${n}" sang danh sách Đã order`,
+  arrived: (n) => `Đã chuyển "${n}" sang danh sách Hàng về`,
+};
+const EMPTY_MSG = {
+  pending: 'Chưa có khách hàng nào. Nhập thông tin ở trên rồi bấm "Thêm khách hàng".',
+  ordered: 'Chưa có khách nào đã order. Bấm "Đã order" ở danh sách Chưa order để chuyển sang đây.',
+  arrived: 'Chưa có hàng nào về. Bấm "Hàng về" ở danh sách Đã order để chuyển sang đây.',
+};
 
 // ---- Lưu mật khẩu trên thiết bị (nếu người dùng chọn "ghi nhớ") ----
 function storeGet() { try { return localStorage.getItem(PW_KEY) || sessionStorage.getItem(PW_KEY) || ''; } catch { return ''; } }
@@ -594,19 +609,18 @@ async function del(id) {
   finally { working = false; }
 }
 
-async function setOrdered(id, ordered) {
+// Chuyển khách giữa 3 danh sách: pending / ordered / arrived
+async function setStatus(id, status) {
   if (working) return;
   const c = customers.find((x) => x.id === id);
   if (!c) return;
   working = true;
   try {
-    const d = await call('order', { id, ordered });
+    const d = await call('status', { id, status });
     const i = customers.findIndex((x) => x.id === id);
     if (i >= 0) customers[i] = d.row;
     render();
-    toast(ordered
-      ? `Đã chuyển "${c.name}" sang danh sách Đã order`
-      : `Đã chuyển "${c.name}" về danh sách Chưa order`);
+    toast(STATUS_MSG[status](c.name));
   } catch (e) { handleErr(e); }
   finally { working = false; }
 }
@@ -636,53 +650,61 @@ document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () 
 
 function render() {
   const q = $('search').value.trim();
-  const matched = customers.filter((c) => matches(c, q));
-  const pending = matched.filter((c) => !c.ordered);
-  const done = matched
-    .filter((c) => c.ordered)
-    .sort((a, b) => String(b.orderedAt || '').localeCompare(String(a.orderedAt || '')));
+  const by = { pending: [], ordered: [], arrived: [] };
+  customers.filter((c) => matches(c, q)).forEach((c) => by[st(c)].push(c));
+  const newest = (f) => (a, b) => String(b[f] || '').localeCompare(String(a[f] || ''));
+  by.ordered.sort(newest('orderedAt'));
+  by.arrived.sort(newest('arrivedAt'));
 
-  $('tabPending').textContent = `Chưa order (${pending.length})`;
-  $('tabDone').textContent = `Đã order (${done.length})`;
+  $('tabPending').textContent = `Chưa order (${by.pending.length})`;
+  $('tabOrdered').textContent = `Đã order (${by.ordered.length})`;
+  $('tabArrived').textContent = `Hàng về (${by.arrived.length})`;
   $('tabPending').setAttribute('aria-selected', String(tab === 'pending'));
-  $('tabDone').setAttribute('aria-selected', String(tab === 'done'));
+  $('tabOrdered').setAttribute('aria-selected', String(tab === 'ordered'));
+  $('tabArrived').setAttribute('aria-selected', String(tab === 'arrived'));
 
-  const isDone = tab === 'done';
-  const list = isDone ? done : pending;
-  const totalInTab = customers.filter((c) => !!c.ordered === isDone).length;
+  const list = by[tab];
+  const totalInTab = customers.filter((c) => st(c) === tab).length;
   $('count').textContent = q ? `${list.length} / ${totalInTab} khách hàng` : `${totalInTab} khách hàng`;
 
   if (!list.length) {
-    let text;
-    if (totalInTab) text = 'Không có khách hàng nào khớp với từ khóa.';
-    else if (isDone) text = 'Chưa có khách nào đã order. Bấm "Đã order" ở danh sách Chưa order để chuyển sang đây.';
-    else text = 'Chưa có khách hàng nào. Nhập thông tin ở trên rồi bấm "Thêm khách hàng".';
+    const text = totalInTab ? 'Không có khách hàng nào khớp với từ khóa.' : EMPTY_MSG[tab];
     $('rows').innerHTML = `<tr><td colspan="7" class="empty">${esc(text)}</td></tr>`;
     return;
   }
 
   $('rows').innerHTML = list.map((c) => {
+    const s = st(c);
+    const id = esc(c.id);
     const icon = c.platform === 'threads' ? '<svg><use href="#ico-th"/></svg>' : c.platform === 'instagram' ? '<svg><use href="#ico-ig"/></svg>' : '';
     const platName = c.platform === 'threads' ? 'Threads' : c.platform === 'instagram' ? 'Instagram' : '';
     const link = c.link ? `<a class="linkline" href="${esc(href(c.link))}" target="_blank" rel="noopener noreferrer">${esc(c.link)}</a>` : '';
     const pay = c.payment === 'deposit'
       ? `<span class="badge dep">Cọc</span><div class="sub">Đã cọc: ${fmt(c.deposit)}</div><div class="sub">Còn lại: ${fmt(c.total - c.deposit)}</div>`
       : `<span class="badge full">Chuyển khoản đủ</span><div class="sub">${fmt(c.total)}</div>`;
-    const orderedLine = isDone && c.orderedAt ? `<div class="sub">Đã order: ${esc(fmtTime(c.orderedAt))}</div>` : '';
-    const orderBtn = isDone
-      ? `<button class="mini" data-unorder="${esc(c.id)}">Hoàn lại</button>`
-      : `<button class="mini ok" data-order="${esc(c.id)}">Đã order</button>`;
+    const times =
+      (s !== 'pending' && c.orderedAt ? `<div class="sub">Đã order: ${esc(fmtTime(c.orderedAt))}</div>` : '') +
+      (s === 'arrived' && c.arrivedAt ? `<div class="sub">Hàng về: ${esc(fmtTime(c.arrivedAt))}</div>` : '');
+    let main;
+    if (s === 'pending') {
+      main = `<button class="mini ok" data-status="ordered" data-id="${id}">Đã order</button>`;
+    } else if (s === 'ordered') {
+      main = `<button class="mini go" data-status="arrived" data-id="${id}">Hàng về</button>
+        <button class="mini back" data-status="pending" data-id="${id}">Hoàn lại</button>`;
+    } else {
+      main = `<button class="mini back" data-status="ordered" data-id="${id}">Hoàn lại</button>`;
+    }
     return `<tr class="${c.id === flashId ? 'flash' : ''}">
-      <td class="time" data-label="Thời gian thêm">${esc(fmtTime(c.createdAt))}${orderedLine}</td>
+      <td class="time" data-label="Thời gian thêm">${esc(fmtTime(c.createdAt))}${times}</td>
       <td class="cust"><div class="who" title="${esc(platName)}">${icon}<span>${esc(c.name)}</span></div>${link}</td>
       <td class="money" data-label="Tổng tiền">${fmt(c.total)}</td>
       <td class="pay" data-label="Thanh toán">${pay}</td>
       <td class="txt prod" data-label="Sản phẩm">${esc(c.product)}</td>
       <td class="txt note" data-label="Ghi chú">${esc(c.note)}</td>
       <td class="acts"><div class="row-actions">
-        ${orderBtn}
-        <button class="mini" data-edit="${esc(c.id)}">Sửa</button>
-        <button class="mini del" data-del="${esc(c.id)}">Xóa</button>
+        ${main}
+        <button class="mini" data-edit="${id}">Sửa</button>
+        <button class="mini del" data-del="${id}">Xóa</button>
       </div></td>
     </tr>`;
   }).join('');
@@ -694,8 +716,7 @@ $('rows').addEventListener('click', (e) => {
   if (!b) return;
   if (b.dataset.edit) edit(b.dataset.edit);
   if (b.dataset.del) del(b.dataset.del);
-  if (b.dataset.order) setOrdered(b.dataset.order, true);
-  if (b.dataset.unorder) setOrdered(b.dataset.unorder, false);
+  if (b.dataset.status) setStatus(b.dataset.id, b.dataset.status);
 });
 $('search').addEventListener('input', render);
 
