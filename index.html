@@ -53,6 +53,8 @@
   input:focus-visible, textarea:focus-visible, button:focus-visible, .pay:focus-within, .plat:focus-visible {
     outline: 2px solid var(--accent); outline-offset: 1px;
   }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 4px; word-break: break-all; }
+  .hint:empty { display: none; }
 
   .plats { display: flex; gap: 10px; flex-wrap: wrap; }
   .plat {
@@ -274,6 +276,7 @@
       <div>
         <label class="lbl" for="link">Link mạng xã hội (hoặc số Zalo)</label>
         <input type="text" id="link" autocomplete="off" placeholder="https://www.instagram.com/ten_khach hoặc 0901234567">
+        <div class="hint" id="linkHint"></div>
       </div>
 
       <div>
@@ -367,7 +370,7 @@
 
 <script>
 // ===== CẤU HÌNH: dán URL Apps Script (kết thúc bằng /exec) vào đây =====
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxKqeG1Xhd_ycHLgFre3g-1vILXGInjmniIlQeUcINAWeMfR2J3-u_dlbUBqaXHpUlQ/exec';
+const SCRIPT_URL = 'https://script.google.com/macros/s/XXXX/exec';
 
 const $ = (id) => document.getElementById(id);
 const PW_KEY = 'kh_pw';
@@ -379,6 +382,8 @@ let flashId = null;
 let tab = 'pending'; // pending = Chưa order, ordered = Đã order, arrived = Hàng về
 let working = false;
 let lastLoad = 0;
+let nameAuto = false; // tên đang do link tự điền (chưa bị người dùng sửa tay)
+let platAuto = false; // mạng xã hội đang do link tự chọn
 
 const PLAT_NAME = { threads: 'Threads', instagram: 'Instagram', zalo: 'Zalo' };
 const PLAT_ICON = { threads: 'ico-th', instagram: 'ico-ig', zalo: 'ico-zl' };
@@ -516,6 +521,54 @@ function toast(text) {
   toastTimer = setTimeout(() => { t.hidden = true; }, 3000);
 }
 
+// ---- Tự lấy ID (tên tài khoản) từ link ----
+const RESERVED_IG = ['p', 'reel', 'reels', 'tv', 'explore', 'accounts', 'direct', 'about', 'legal', 'privacy', 'developer', 'directory', 'web'];
+function safeDecode(s) { try { return decodeURIComponent(s); } catch { return s; } }
+
+// Trả về { id, platform } hoặc null nếu không nhận diện được
+function parseLink(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  const at = s.match(/^@([A-Za-z0-9._]{1,40})$/);
+  if (at) return { id: at[1], platform: '' };
+  if (/^\+?[\d\s.\-()]{8,16}$/.test(s)) return { id: s.replace(/\D/g, ''), platform: 'zalo' };
+
+  let url;
+  try { url = new URL(/^[a-z][a-z0-9+.\-]*:\/\//i.test(s) ? s : 'https://' + s); } catch { return null; }
+  if (!/^https?:$/.test(url.protocol)) return null;
+  const host = url.hostname.toLowerCase().replace(/^(www|m)\./, '');
+  const parts = url.pathname.split('/').filter(Boolean).map(safeDecode);
+  const ok = (v) => /^[A-Za-z0-9._]{1,40}$/.test(v || '');
+
+  if (host === 'instagram.com' || host === 'instagr.am') {
+    let id = parts[0];
+    if ((id === 'stories' || id === '_u') && parts[1]) id = parts[1];
+    else if (RESERVED_IG.includes(id)) return null;
+    return ok(id) ? { id, platform: 'instagram' } : null;
+  }
+  if (host === 'threads.net' || host === 'threads.com') {
+    const h = parts[0] || '';
+    return h.startsWith('@') && ok(h.slice(1)) ? { id: h.slice(1), platform: 'threads' } : null;
+  }
+  if (host === 'zalo.me') {
+    const id = parts[0];
+    if (!id || id === 'g' || id === 's') return null;
+    return ok(id) ? { id, platform: 'zalo' } : null;
+  }
+  return null;
+}
+
+function onLinkInput() {
+  const info = parseLink($('link').value);
+  const hint = $('linkHint');
+  if (!info) { hint.textContent = ''; return; }
+  hint.textContent = `Nhận diện: ${info.platform ? PLAT_NAME[info.platform] + ' · ' : ''}ID: ${info.id}`;
+  if (!$('name').value.trim() || nameAuto) { $('name').value = info.id; nameAuto = true; }
+  if (info.platform && (!platform || platAuto)) { setPlatform(info.platform); platAuto = true; }
+}
+$('link').addEventListener('input', onLinkInput);
+$('name').addEventListener('input', () => { nameAuto = false; }); // người dùng tự gõ tên => không ghi đè nữa
+
 // ---- Form ----
 function bindMoney(input) {
   input.addEventListener('input', () => {
@@ -551,7 +604,10 @@ $('deposit').addEventListener('focus', () => {
   if (payMode() !== 'deposit') { document.querySelector('input[value=deposit]').checked = true; updatePay(); }
 });
 
-document.querySelectorAll('.plat').forEach((b) => b.addEventListener('click', () => setPlatform(platform === b.dataset.p ? '' : b.dataset.p)));
+document.querySelectorAll('.plat').forEach((b) => b.addEventListener('click', () => {
+  platAuto = false; // người dùng tự chọn => link không tự đổi nữa
+  setPlatform(platform === b.dataset.p ? '' : b.dataset.p);
+}));
 function setPlatform(p) {
   platform = p;
   document.querySelectorAll('.plat').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.p === p)));
@@ -559,7 +615,10 @@ function setPlatform(p) {
 
 function resetForm() {
   editId = null;
+  nameAuto = false;
+  platAuto = false;
   ['name', 'link', 'total', 'deposit', 'product', 'note'].forEach((id) => ($(id).value = ''));
+  $('linkHint').textContent = '';
   document.querySelector('input[value=full]').checked = true;
   setPlatform('');
   $('saveBtn').textContent = 'Thêm khách hàng';
@@ -610,6 +669,9 @@ function edit(id) {
   const c = customers.find((x) => x.id === id);
   if (!c) return;
   editId = id;
+  nameAuto = false; // đang sửa khách cũ: không tự ghi đè tên / mạng xã hội
+  platAuto = false;
+  $('linkHint').textContent = '';
   $('name').value = c.name;
   $('link').value = c.link || '';
   setPlatform(c.platform || '');
