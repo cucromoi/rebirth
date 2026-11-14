@@ -9,6 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
+    color-scheme: light dark;
     --bg: #eef1f6; --surface: #ffffff; --ink: #172033; --muted: #5d6882; --line: #d9dfeb;
     --accent: #3b4bdb; --accent-soft: #e8eafc; --on-accent: #ffffff;
     --paid: #1f8a5b; --paid-soft: #e1f4ea; --on-paid: #ffffff;
@@ -50,7 +51,7 @@
     border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px;
   }
   textarea { resize: vertical; min-height: 150px; line-height: 1.55; }
-  input:focus-visible, textarea:focus-visible, button:focus-visible, .pay:focus-within, .plat:focus-visible {
+  input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible, .pay:focus-within, .plat:focus-visible {
     outline: 2px solid var(--accent); outline-offset: 1px;
   }
   .hint { color: var(--muted); font-size: 13px; margin-top: 4px; word-break: break-all; }
@@ -100,6 +101,14 @@
   .list-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin: 34px 0 12px; }
   .search { width: min(420px, 100%); }
   .count { color: var(--muted); font-size: 14px; }
+
+  /* bộ lọc: sắp xếp + ngày cụ thể */
+  .filters { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin: 0 0 12px; }
+  .fl { display: grid; gap: 4px; font-size: 13px; color: var(--muted); font-weight: 500; }
+  .fl select, .fl input[type=date] {
+    font: inherit; font-size: 14.5px; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; min-width: 175px;
+  }
 
   .tabs { display: flex; gap: 8px; margin: 0 0 12px; flex-wrap: wrap; }
   .tab {
@@ -184,6 +193,10 @@
 
     .list-head { margin-top: 26px; }
     .search { width: 100%; }
+    .filters { gap: 8px; }
+    .fl { flex: 1 1 calc(50% - 8px); }
+    .fl select, .fl input[type=date] { width: 100%; min-width: 0; font-size: 16px; }
+    #clearFilters { flex: 1 1 100%; min-height: 40px; font-size: 14.5px; }
     .tabs { flex-wrap: nowrap; gap: 6px; }
     .tab { flex: 1; padding: 11px 4px; font-size: 13.5px; white-space: nowrap; }
 
@@ -336,6 +349,19 @@
     <input type="text" id="search" class="search" autocomplete="off" placeholder="Tìm theo tên, tiền, sản phẩm, ghi chú, Zalo...">
   </div>
 
+  <div class="filters">
+    <label class="fl"><span>Sắp xếp</span>
+      <select id="sortDir">
+        <option value="desc">Mới nhất trước</option>
+        <option value="asc">Cũ nhất trước</option>
+      </select>
+    </label>
+    <label class="fl"><span id="dateLbl">Ngày thêm</span>
+      <input type="date" id="dateFilter">
+    </label>
+    <button class="mini" id="clearFilters" type="button" hidden>Xóa lọc</button>
+  </div>
+
   <div class="tabs" role="tablist">
     <button class="tab" id="tabPending" role="tab" type="button" data-tab="pending" aria-selected="true">Chưa order (0)</button>
     <button class="tab" id="tabOrdered" role="tab" type="button" data-tab="ordered" aria-selected="false">Đã order (0)</button>
@@ -388,6 +414,10 @@ let platAuto = false; // mạng xã hội đang do link tự chọn
 const PLAT_NAME = { threads: 'Threads', instagram: 'Instagram', zalo: 'Zalo' };
 const PLAT_ICON = { threads: 'ico-th', instagram: 'ico-ig', zalo: 'ico-zl' };
 
+// Mỗi tab sắp xếp / lọc ngày theo một loại ngày riêng
+const DATE_FIELD = { pending: 'createdAt', ordered: 'orderedAt', arrived: 'arrivedAt' };
+const DATE_LABEL = { pending: 'Ngày thêm', ordered: 'Ngày order', arrived: 'Ngày hàng về' };
+
 const fmt = (n) => (Number(n) || 0).toLocaleString('vi-VN') + ' đ';
 const digits = (s) => String(s || '').replace(/\D/g, '');
 const toNum = (s) => Number(digits(s)) || 0;
@@ -395,6 +425,17 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd');
 const sortList = (list) => list.slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
 const st = (c) => (c.status === 'pending' || c.status === 'ordered' || c.status === 'arrived') ? c.status : (c.ordered ? 'ordered' : 'pending');
+
+// Ngày (giờ địa phương) dạng yyyy-mm-dd để so với ô chọn ngày
+function dateKey(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+// Ngày dùng để sắp xếp / lọc của một khách theo tab
+const when = (c, s) => c[DATE_FIELD[s]] || c.createdAt || '';
 
 const STATUS_MSG = {
   pending: (n) => `Đã chuyển "${n}" về danh sách Chưa order`,
@@ -747,13 +788,31 @@ document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () 
   render();
 }));
 
+// Bộ lọc: sắp xếp + ngày cụ thể
+$('sortDir').addEventListener('change', render);
+$('dateFilter').addEventListener('input', render);
+$('dateFilter').addEventListener('change', render);
+$('clearFilters').addEventListener('click', () => {
+  $('sortDir').value = 'desc';
+  $('dateFilter').value = '';
+  render();
+});
+
 function render() {
   const q = $('search').value.trim();
+  const day = $('dateFilter').value; // yyyy-mm-dd hoặc rỗng
+  const dir = $('sortDir').value === 'asc' ? 1 : -1;
+
   const by = { pending: [], ordered: [], arrived: [] };
-  customers.filter((c) => matches(c, q)).forEach((c) => by[st(c)].push(c));
-  const newest = (f) => (a, b) => String(b[f] || '').localeCompare(String(a[f] || ''));
-  by.ordered.sort(newest('orderedAt'));
-  by.arrived.sort(newest('arrivedAt'));
+  customers
+    .filter((c) => matches(c, q) && (!day || dateKey(when(c, st(c))) === day))
+    .forEach((c) => by[st(c)].push(c));
+  Object.keys(by).forEach((k) => {
+    by[k].sort((a, b) => dir * String(when(a, k)).localeCompare(String(when(b, k))));
+  });
+
+  $('dateLbl').textContent = DATE_LABEL[tab];
+  $('clearFilters').hidden = !(day || dir === 1);
 
   $('tabPending').textContent = `Chưa order (${by.pending.length})`;
   $('tabOrdered').textContent = `Đã order (${by.ordered.length})`;
@@ -764,10 +823,10 @@ function render() {
 
   const list = by[tab];
   const totalInTab = customers.filter((c) => st(c) === tab).length;
-  $('count').textContent = q ? `${list.length} / ${totalInTab} khách hàng` : `${totalInTab} khách hàng`;
+  $('count').textContent = (q || day) ? `${list.length} / ${totalInTab} khách hàng` : `${totalInTab} khách hàng`;
 
   if (!list.length) {
-    const text = totalInTab ? 'Không có khách hàng nào khớp với từ khóa.' : EMPTY_MSG[tab];
+    const text = totalInTab ? 'Không có khách hàng nào khớp với từ khóa hoặc ngày đã chọn.' : EMPTY_MSG[tab];
     $('rows').innerHTML = `<tr><td colspan="7" class="empty">${esc(text)}</td></tr>`;
     return;
   }
