@@ -407,7 +407,6 @@ let platform = '';
 let flashId = null;
 let tab = 'pending'; // pending = Chưa order, ordered = Đã order, arrived = Hàng về
 let working = false;
-let lastLoad = 0;
 let nameAuto = false; // tên đang do link tự điền (chưa bị người dùng sửa tay)
 let platAuto = false; // mạng xã hội đang do link tự chọn
 
@@ -424,8 +423,6 @@ const toNum = (s) => Number(digits(s)) || 0;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd');
 const sortList = (list) => list.slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-// giữ bản cuối của mỗi ID (phòng khi đọc đúng lúc một khách đang được chuyển bảng)
-const dedupe = (rows) => Array.from(new Map(rows.map((r) => [r.id, r])).values());
 const st = (c) => (c.status === 'pending' || c.status === 'ordered' || c.status === 'arrived') ? c.status : (c.ordered ? 'ordered' : 'pending');
 
 // Ngày (giờ địa phương) dạng yyyy-mm-dd để so với ô chọn ngày
@@ -454,6 +451,16 @@ const EMPTY_MSG = {
 function storeGet() { try { return localStorage.getItem(PW_KEY) || sessionStorage.getItem(PW_KEY) || ''; } catch { return ''; } }
 function storeSet(pw, remember) { try { (remember ? localStorage : sessionStorage).setItem(PW_KEY, pw); } catch {} }
 function storeClear() { try { localStorage.removeItem(PW_KEY); sessionStorage.removeItem(PW_KEY); } catch {} }
+
+// ---- Cache toàn bộ danh sách trên thiết bị: mở app không cần gọi server ----
+const DATA_KEY = 'kh_data';
+function cacheGet() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(DATA_KEY));
+    return Array.isArray(arr) ? arr : null;
+  } catch { return null; }
+}
+function cacheSet(rows) { try { localStorage.setItem(DATA_KEY, JSON.stringify(rows)); } catch {} }
 
 // ---- Gọi Google Apps Script ----
 async function call(action, payload) {
@@ -503,8 +510,8 @@ async function doLogin() {
   try {
     const d = await call('list');
     storeSet(pw, $('remember').checked);
-    customers = sortList(dedupe(d.rows));
-    lastLoad = Date.now();
+    customers = sortList(d.rows);
+    cacheSet(customers);
     $('login').hidden = true;
     $('pw').value = '';
     $('loginMsg').textContent = '';
@@ -526,8 +533,8 @@ async function load() {
   $('count').textContent = 'Đang tải dữ liệu...';
   try {
     const d = await call('list');
-    customers = sortList(dedupe(d.rows));
-    lastLoad = Date.now();
+    customers = sortList(d.rows);
+    cacheSet(customers);
     render();
     updateClock();
   } catch (e) {
@@ -535,9 +542,6 @@ async function load() {
     handleErr(e);
   }
 }
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && password && Date.now() - lastLoad > 30000) load();
-});
 
 // ---- Giờ: dd/MM/yyyy HH:mm (ví dụ 27/10/2026 14:35), theo múi giờ của thiết bị ----
 function fmtTime(iso) {
@@ -694,6 +698,7 @@ $('saveBtn').addEventListener('click', async () => {
     const i = customers.findIndex((x) => x.id === d.row.id);
     if (i >= 0) customers[i] = d.row; else customers.push(d.row);
     customers = sortList(customers);
+    cacheSet(customers);
     flashId = d.row.id;
     if (isNew) tab = 'pending';
     resetForm();
@@ -741,6 +746,7 @@ async function del(id) {
   try {
     await call('delete', { id });
     customers = customers.filter((x) => x.id !== id);
+    cacheSet(customers);
     if (editId === id) resetForm();
     render();
     toast('Đã xóa khách hàng');
@@ -751,31 +757,18 @@ async function del(id) {
 // Chuyển khách giữa 3 danh sách: pending / ordered / arrived
 async function setStatus(id, status) {
   if (working) return;
-  const i = customers.findIndex((x) => x.id === id);
-  if (i < 0) return;
-  const prev = customers[i];
-  // đổi ngay trên màn hình, không chờ mạng; sẽ hoàn tác nếu gọi API lỗi
-  const now = new Date().toISOString();
-  customers[i] = Object.assign({}, prev, {
-    status,
-    ordered: status !== 'pending',
-    orderedAt: status === 'pending' ? null : (prev.orderedAt || now),
-    arrivedAt: status === 'arrived' ? now : null,
-  });
+  const c = customers.find((x) => x.id === id);
+  if (!c) return;
   working = true;
-  render();
-  toast(STATUS_MSG[status](prev.name));
   try {
-    const d = await call('status', { id, status });
-    const j = customers.findIndex((x) => x.id === id);
-    if (j >= 0) customers[j] = d.row;
+    const d = await call('status', { id, status }); // chờ sheet ghi xong, trả về dòng đã lưu
+    const i = customers.findIndex((x) => x.id === id);
+    if (i >= 0) customers[i] = d.row;
+    cacheSet(customers);
     render();
-  } catch (e) {
-    const j = customers.findIndex((x) => x.id === id);
-    if (j >= 0) customers[j] = prev;
-    render();
-    handleErr(e);
-  } finally { working = false; }
+    toast(STATUS_MSG[status](c.name));
+  } catch (e) { handleErr(e); }
+  finally { working = false; }
 }
 
 // ---- Danh sách ----
@@ -935,7 +928,11 @@ $('importFile').addEventListener('change', async (e) => {
 updatePay();
 updateClock();
 password = storeGet();
-if (password) load(); else showLogin('');
+if (password) {
+  const cached = cacheGet();
+  if (cached) { customers = sortList(cached); render(); } // đã có cache: mở tức thì, không gọi server
+  else load(); // lần đầu trên thiết bị này: tải toàn bộ một lần rồi lưu cache
+} else showLogin('');
 </script>
 </body>
 </html>
