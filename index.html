@@ -109,6 +109,14 @@
     font: inherit; font-size: 14.5px; color: var(--ink); background: var(--surface);
     border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; min-width: 175px;
   }
+  .filters .mini { min-height: 41px; padding: 9px 16px; font-size: 14.5px; }
+
+  .tabs { display: flex; gap: 8px; margin: 0 0 12px; flex-wrap: wrap; }
+  .tab {
+    font: inherit; font-weight: 600; cursor: pointer; padding: 9px 18px; border-radius: 10px;
+    border: 1.5px solid var(--line); background: transparent; color: var(--muted);
+  }
+  .tab[aria-selected=true] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 
   .tablebox { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
   table { width: 100%; border-collapse: collapse; min-width: 1020px; }
@@ -190,6 +198,9 @@
     .fl { flex: 1 1 calc(50% - 8px); }
     .fl select, .fl input[type=date] { width: 100%; min-width: 0; font-size: 16px; }
     #clearFilters { flex: 1 1 100%; min-height: 40px; font-size: 14.5px; }
+    #refreshBtn { flex: 1 1 100%; min-height: 44px; }
+    .tabs { flex-wrap: nowrap; gap: 6px; }
+    .tab { flex: 1; padding: 11px 4px; font-size: 13.5px; white-space: nowrap; }
 
     .tablebox { overflow: visible; border: none; border-radius: 0; background: transparent; }
     table, tbody { display: block; width: 100%; min-width: 0; }
@@ -266,7 +277,6 @@
   <div class="top">
     <h1>Quản lý khách hàng</h1>
     <div class="top-actions">
-      <button class="mini" id="refreshBtn" type="button">Tải lại</button>
       <button class="mini" id="logoutBtn" type="button">Đăng xuất</button>
     </div>
   </div>
@@ -341,13 +351,6 @@
   </div>
 
   <div class="filters">
-    <label class="fl"><span>Trạng thái</span>
-      <select id="statusFilter">
-        <option value="pending">Chưa order (0)</option>
-        <option value="ordered">Đã order (0)</option>
-        <option value="arrived">Hàng về (0)</option>
-      </select>
-    </label>
     <label class="fl"><span>Sắp xếp</span>
       <select id="sortDir">
         <option value="desc">Mới nhất trước</option>
@@ -357,7 +360,14 @@
     <label class="fl"><span id="dateLbl">Ngày thêm</span>
       <input type="date" id="dateFilter">
     </label>
+    <button class="mini" id="refreshBtn" type="button">Tải lại</button>
     <button class="mini" id="clearFilters" type="button" hidden>Xóa lọc</button>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" id="tabPending" role="tab" type="button" data-tab="pending" aria-selected="true">Chưa order (0)</button>
+    <button class="tab" id="tabOrdered" role="tab" type="button" data-tab="ordered" aria-selected="false">Đã order (0)</button>
+    <button class="tab" id="tabArrived" role="tab" type="button" data-tab="arrived" aria-selected="false">Hàng về (0)</button>
   </div>
 
   <div class="tablebox">
@@ -538,7 +548,7 @@ async function doLogin() {
 $('loginBtn').addEventListener('click', doLogin);
 $('pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
 $('logoutBtn').addEventListener('click', () => { customers = []; render(); showLogin(''); });
-$('refreshBtn').addEventListener('click', () => load());
+$('refreshBtn').addEventListener('click', refresh);
 
 async function load() {
   $('count').textContent = 'Đang tải dữ liệu...';
@@ -549,10 +559,25 @@ async function load() {
     clearDirty();
     render();
     updateClock();
+    return null;
   } catch (e) {
     $('count').textContent = 'Không tải được dữ liệu';
     handleErr(e);
+    return e;
   }
+}
+
+// Nút Tải lại: hiện "Đang tải lại..." ngay trên nút, xong báo thành công / thất bại.
+async function refresh() {
+  const btn = $('refreshBtn');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = 'Đang tải lại...';
+  const err = await load();
+  btn.disabled = false;
+  btn.textContent = 'Tải lại';
+  if (err) toast('Tải lại thất bại: ' + (err.auth ? 'sai mật khẩu' : err.message));
+  else toast('Tải lại thành công (' + customers.length + ' khách hàng)');
 }
 
 // ---- Giờ: dd/MM/yyyy HH:mm (ví dụ 27/10/2026 14:35), theo múi giờ của thiết bị ----
@@ -770,7 +795,7 @@ async function del(id) {
   finally { working = false; }
 }
 
-// Đổi trạng thái khách: pending / ordered / arrived (sheet sửa tại chỗ, không chuyển dòng)
+// Chuyển khách giữa 3 danh sách: pending / ordered / arrived
 async function setStatus(id, status) {
   if (working) return;
   const c = customers.find((x) => x.id === id);
@@ -780,7 +805,7 @@ async function setStatus(id, status) {
   if (btn) { btn.disabled = true; btn.textContent = 'Đang lưu...'; }
   markDirty();
   try {
-    const d = await call('status', { id, status }, 30000); // chờ sheet sửa tại chỗ xong, trả về dòng đã lưu rồi mới đổi web
+    const d = await call('status', { id, status, from: c.status }, 30000); // chờ sheet ghi xong, trả về dòng đã lưu; from giúp backend quét đúng 1 tab
     const i = customers.findIndex((x) => x.id === id);
     if (i >= 0) customers[i] = d.row;
     cacheSet(customers);
@@ -812,7 +837,10 @@ function matches(c, q) {
   return false;
 }
 
-$('statusFilter').addEventListener('change', (e) => { tab = e.target.value; render(); });
+document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => {
+  tab = b.dataset.tab;
+  render();
+}));
 
 // Bộ lọc: sắp xếp + ngày cụ thể
 $('sortDir').addEventListener('change', render);
@@ -840,11 +868,12 @@ function render() {
   $('dateLbl').textContent = DATE_LABEL[tab];
   $('clearFilters').hidden = !(day || dir === 1);
 
-  const sf = $('statusFilter');
-  sf.options[0].textContent = `Chưa order (${by.pending.length})`;
-  sf.options[1].textContent = `Đã order (${by.ordered.length})`;
-  sf.options[2].textContent = `Hàng về (${by.arrived.length})`;
-  sf.value = tab;
+  $('tabPending').textContent = `Chưa order (${by.pending.length})`;
+  $('tabOrdered').textContent = `Đã order (${by.ordered.length})`;
+  $('tabArrived').textContent = `Hàng về (${by.arrived.length})`;
+  $('tabPending').setAttribute('aria-selected', String(tab === 'pending'));
+  $('tabOrdered').setAttribute('aria-selected', String(tab === 'ordered'));
+  $('tabArrived').setAttribute('aria-selected', String(tab === 'arrived'));
 
   const list = by[tab];
   const totalInTab = customers.filter((c) => st(c) === tab).length;
