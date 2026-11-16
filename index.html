@@ -39,7 +39,9 @@
   h1 { font-size: 26px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
   h2 { font-size: 18px; font-weight: 600; margin: 0; }
   .top { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
-  .top-actions { display: flex; gap: 8px; }
+  .top-actions { display: flex; gap: 8px; align-items: center; }
+  .sync { color: var(--muted); font-size: 13px; }
+  .sync:empty { display: none; }
 
   .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
   .grid { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; }
@@ -160,6 +162,10 @@
   @keyframes flash { from { background: var(--accent-soft); } }
   @media (prefers-reduced-motion: reduce) { tr.flash td { animation: none; } }
 
+  .more { display: flex; justify-content: center; margin-top: 14px; }
+  .more[hidden] { display: none; }
+  .more .mini { padding: 9px 18px; font-size: 14px; }
+
   .foot { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 24px; }
 
   .toast {
@@ -275,6 +281,7 @@
   <div class="top">
     <h1>Quản lý khách hàng</h1>
     <div class="top-actions">
+      <span class="sync" id="syncState" aria-live="polite"></span>
       <button class="mini" id="refreshBtn" type="button">Tải lại</button>
       <button class="mini" id="logoutBtn" type="button">Đăng xuất</button>
     </div>
@@ -385,6 +392,10 @@
     </table>
   </div>
 
+  <div class="more" id="moreWrap" hidden>
+    <button class="mini" id="moreBtn" type="button"></button>
+  </div>
+
   <div class="foot">
     <button class="mini" id="exportBtn" type="button">Tải bản sao lưu (JSON)</button>
     <button class="mini" id="importBtn" type="button">Nhập dữ liệu cũ (data.json)</button>
@@ -400,16 +411,23 @@ const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxKqeG1Xhd_ycHLgFre3
 
 const $ = (id) => document.getElementById(id);
 const PW_KEY = 'kh_pw';
+const CACHE_KEY = 'kh_cache';
+const PAGE = 40; // số khách hiển thị mỗi lần (bấm "Hiện thêm" để xem tiếp)
+
 let password = '';
 let customers = [];
 let editId = null;
 let platform = '';
 let flashId = null;
 let tab = 'pending'; // pending = Chưa order, ordered = Đã order, arrived = Hàng về
-let working = false;
+let working = false; // chỉ dùng cho việc nhập file
 let lastLoad = 0;
 let nameAuto = false; // tên đang do link tự điền (chưa bị người dùng sửa tay)
 let platAuto = false; // mạng xã hội đang do link tự chọn
+let shown = PAGE;
+let pendingOps = 0;   // số thay đổi đang chờ lưu lên Google
+let chain = Promise.resolve();
+let rev = 0;          // tăng mỗi khi có thay đổi tại chỗ, để bỏ kết quả tải cũ
 
 const PLAT_NAME = { threads: 'Threads', instagram: 'Instagram', zalo: 'Zalo' };
 const PLAT_ICON = { threads: 'ico-th', instagram: 'ico-ig', zalo: 'ico-zl' };
@@ -425,6 +443,11 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd');
 const sortList = (list) => list.slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
 const st = (c) => (c.status === 'pending' || c.status === 'ordered' || c.status === 'arrived') ? c.status : (c.ordered ? 'ordered' : 'pending');
+
+function newId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+}
 
 // Ngày (giờ địa phương) dạng yyyy-mm-dd để so với ô chọn ngày
 function dateKey(iso) {
@@ -448,10 +471,18 @@ const EMPTY_MSG = {
   arrived: 'Chưa có hàng nào về. Bấm "Hàng về" ở danh sách Đã order để chuyển sang đây.',
 };
 
-// ---- Lưu mật khẩu trên thiết bị (nếu người dùng chọn "ghi nhớ") ----
+// ---- Lưu mật khẩu + bản sao danh sách trên thiết bị ----
 function storeGet() { try { return localStorage.getItem(PW_KEY) || sessionStorage.getItem(PW_KEY) || ''; } catch { return ''; } }
 function storeSet(pw, remember) { try { (remember ? localStorage : sessionStorage).setItem(PW_KEY, pw); } catch {} }
-function storeClear() { try { localStorage.removeItem(PW_KEY); sessionStorage.removeItem(PW_KEY); } catch {} }
+function storeClear() {
+  try {
+    [localStorage, sessionStorage].forEach((s) => { s.removeItem(PW_KEY); s.removeItem(CACHE_KEY); });
+  } catch {}
+}
+// Bản sao danh sách nằm cùng chỗ với mật khẩu: không "ghi nhớ" thì mất khi đóng tab
+function storeArea() { try { return localStorage.getItem(PW_KEY) ? localStorage : sessionStorage; } catch { return null; } }
+function cacheSave() { try { const a = storeArea(); if (a) a.setItem(CACHE_KEY, JSON.stringify(customers)); } catch {} }
+function cacheLoad() { try { const a = storeArea(); const s = a && a.getItem(CACHE_KEY); return s ? JSON.parse(s) : null; } catch { return null; } }
 
 // ---- Gọi Google Apps Script ----
 async function call(action, payload) {
@@ -483,6 +514,38 @@ function handleErr(e) {
   toast(e.message);
 }
 
+// ---- Hàng đợi lưu nền: thay đổi hiện ngay, lưu lên Google lần lượt theo thứ tự ----
+function showSync() { $('syncState').textContent = pendingOps > 0 ? `Đang đồng bộ… (${pendingOps})` : ''; }
+window.addEventListener('beforeunload', (e) => {
+  if (pendingOps > 0) { e.preventDefault(); e.returnValue = ''; }
+});
+
+function enqueue(task) {
+  pendingOps++;
+  showSync();
+  chain = chain.then(async () => {
+    try {
+      await task();
+    } catch (e) {
+      if (e.auth) handleErr(e);
+      else {
+        toast('Không lưu được thay đổi: ' + e.message + '. Đang tải lại dữ liệu…');
+        await load({ silent: true, force: true });
+      }
+    } finally {
+      pendingOps--;
+      showSync();
+    }
+  });
+}
+
+function touch() { rev++; cacheSave(); }
+function upsertLocal(row) {
+  const i = customers.findIndex((x) => x.id === row.id);
+  if (i >= 0) customers[i] = row; else customers.push(row);
+  customers = sortList(customers);
+}
+
 // ---- Đăng nhập ----
 function showLogin(msg) {
   password = '';
@@ -503,6 +566,7 @@ async function doLogin() {
     storeSet(pw, $('remember').checked);
     customers = sortList(d.rows);
     lastLoad = Date.now();
+    cacheSave();
     $('login').hidden = true;
     $('pw').value = '';
     $('loginMsg').textContent = '';
@@ -518,23 +582,32 @@ async function doLogin() {
 $('loginBtn').addEventListener('click', doLogin);
 $('pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
 $('logoutBtn').addEventListener('click', () => { customers = []; render(); showLogin(''); });
-$('refreshBtn').addEventListener('click', () => load());
+$('refreshBtn').addEventListener('click', () => {
+  if (pendingOps > 0) { toast('Đang đồng bộ thay đổi, vui lòng chờ một chút…'); return; }
+  load({ fresh: true }); // bỏ qua bộ nhớ đệm, đọc thẳng từ Sheet
+});
 
-async function load() {
-  $('count').textContent = 'Đang tải dữ liệu...';
+// opts: silent (không hiện "Đang tải"), fresh (đọc thẳng từ Sheet), force (bỏ qua kiểm tra thay đổi đang chờ)
+async function load(opts) {
+  const o = opts || {};
+  if (!o.force && pendingOps > 0) return;
+  const r0 = rev;
+  if (!o.silent) $('count').textContent = 'Đang tải dữ liệu...';
   try {
-    const d = await call('list');
+    const d = await call('list', { fresh: !!o.fresh });
+    if (!o.force && (rev !== r0 || pendingOps > 0)) { render(); return; } // trong lúc tải bạn đã sửa gì đó: bỏ kết quả cũ
     customers = sortList(d.rows);
     lastLoad = Date.now();
+    cacheSave();
     render();
     updateClock();
   } catch (e) {
-    $('count').textContent = 'Không tải được dữ liệu';
-    handleErr(e);
+    if (!o.silent || o.force) $('count').textContent = 'Không tải được dữ liệu — dữ liệu hiển thị có thể chưa mới nhất';
+    if (e.auth || !o.silent) handleErr(e);
   }
 }
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && password && Date.now() - lastLoad > 30000) load();
+  if (!document.hidden && password && Date.now() - lastLoad > 120000) load({ silent: true });
 });
 
 // ---- Giờ: dd/MM/yyyy HH:mm (ví dụ 27/10/2026 14:35), theo múi giờ của thiết bị ----
@@ -559,7 +632,7 @@ function toast(text) {
   t.textContent = text;
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 3000);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 3200);
 }
 
 // ---- Tự lấy ID (tên tài khoản) từ link ----
@@ -670,39 +743,38 @@ function resetForm() {
   updateClock();
 }
 
-$('saveBtn').addEventListener('click', async () => {
-  if (working) return;
+// Thêm / sửa khách: hiện ngay trên màn hình, lưu lên Google chạy nền
+$('saveBtn').addEventListener('click', () => {
   const total = toNum($('total').value);
   const mode = payMode();
   const deposit = mode === 'deposit' ? toNum($('deposit').value) : 0;
   if (!$('name').value.trim()) { $('msg').textContent = 'Vui lòng nhập tên khách hàng'; $('name').focus(); return; }
   if (deposit > total) { $('msg').textContent = 'Số cọc không được lớn hơn tổng tiền'; return; }
-  const row = {
-    id: editId || undefined,
-    name: $('name').value, link: $('link').value, platform, total,
-    payment: mode, deposit, product: $('product').value, note: $('note').value,
-  };
+
   const isNew = !editId;
-  working = true;
-  $('saveBtn').disabled = true;
-  $('saveBtn').textContent = 'Đang lưu...';
-  $('msg').textContent = '';
-  try {
-    const d = await call('save', { row });
-    const i = customers.findIndex((x) => x.id === d.row.id);
-    if (i >= 0) customers[i] = d.row; else customers.push(d.row);
-    customers = sortList(customers);
-    flashId = d.row.id;
-    if (isNew) tab = 'pending';
-    resetForm();
-    render();
-  } catch (e) {
-    handleErr(e);
-  } finally {
-    working = false;
-    $('saveBtn').disabled = false;
-    $('saveBtn').textContent = editId ? 'Lưu thay đổi' : 'Thêm khách hàng';
-  }
+  const id = editId || newId();
+  const old = customers.find((x) => x.id === id);
+  const s = old ? st(old) : 'pending';
+  const fields = {
+    name: $('name').value.trim(), link: $('link').value.trim(), platform, total,
+    payment: mode, deposit, product: $('product').value.trim(), note: $('note').value.trim(),
+  };
+  const optimistic = Object.assign(
+    { createdAt: new Date().toISOString(), orderedAt: null, arrivedAt: null },
+    old || {}, fields, { id, status: s, ordered: s !== 'pending' }
+  );
+  upsertLocal(optimistic);
+  touch();
+  flashId = id;
+  if (isNew) tab = 'pending';
+  shown = Math.max(shown, PAGE);
+  resetForm();
+  render();
+
+  enqueue(async () => {
+    const d = await call('save', { row: Object.assign({}, fields, { id, status: s }) });
+    if (pendingOps <= 1) { upsertLocal(d.row); touch(); render(); } // có thay đổi khác đang chờ thì khỏi vẽ lại giữa chừng
+  });
 });
 $('cancelBtn').addEventListener('click', resetForm);
 
@@ -731,35 +803,37 @@ function edit(id) {
   $('name').focus({ preventScroll: true });
 }
 
-async function del(id) {
-  if (working) return;
+function del(id) {
   const c = customers.find((x) => x.id === id);
   if (!c || !confirm(`Xóa khách hàng "${c.name}"? Thao tác này không hoàn tác được.`)) return;
-  working = true;
-  try {
-    await call('delete', { id });
-    customers = customers.filter((x) => x.id !== id);
-    if (editId === id) resetForm();
-    render();
-    toast('Đã xóa khách hàng');
-  } catch (e) { handleErr(e); }
-  finally { working = false; }
+  const hint = st(c);
+  customers = customers.filter((x) => x.id !== id);
+  touch();
+  if (editId === id) resetForm();
+  render();
+  toast('Đã xóa khách hàng');
+  enqueue(async () => { await call('delete', { id, hint }); });
 }
 
-// Chuyển khách giữa 3 danh sách: pending / ordered / arrived
-async function setStatus(id, status) {
-  if (working) return;
+// Chuyển khách giữa 3 danh sách: pending / ordered / arrived (hiện ngay, lưu nền)
+function setStatus(id, status) {
   const c = customers.find((x) => x.id === id);
   if (!c) return;
-  working = true;
-  try {
-    const d = await call('status', { id, status });
-    const i = customers.findIndex((x) => x.id === id);
-    if (i >= 0) customers[i] = d.row;
-    render();
-    toast(STATUS_MSG[status](c.name));
-  } catch (e) { handleErr(e); }
-  finally { working = false; }
+  const prev = st(c);
+  if (prev === status) return;
+  const now = new Date().toISOString();
+  const n = Object.assign({}, c, { status, ordered: status !== 'pending' });
+  if (status === 'pending') { n.orderedAt = null; n.arrivedAt = null; }
+  else if (status === 'ordered') { n.orderedAt = c.orderedAt || now; n.arrivedAt = null; }
+  else { n.orderedAt = c.orderedAt || now; n.arrivedAt = now; }
+  upsertLocal(n);
+  touch();
+  render();
+  toast(STATUS_MSG[status](c.name));
+  enqueue(async () => {
+    const d = await call('status', { id, status, hint: prev });
+    if (pendingOps <= 1) { upsertLocal(d.row); touch(); render(); }
+  });
 }
 
 // ---- Danh sách ----
@@ -771,41 +845,57 @@ function href(link, plat) {
   return 'https://' + l;
 }
 
-function matches(c, q) {
+// Chuẩn hóa chữ tìm kiếm một lần cho mỗi khách (không phải tính lại mỗi lần gõ)
+const textCache = new WeakMap();
+function searchText(c) {
+  let t = textCache.get(c);
+  if (t === undefined) {
+    t = norm([c.name, c.product, c.note, c.link, PLAT_NAME[c.platform] || ''].join(' '));
+    textCache.set(c, t);
+  }
+  return t;
+}
+
+function matches(c, q, nq, dq) {
   if (!q) return true;
-  const text = norm([c.name, c.product, c.note, c.link, PLAT_NAME[c.platform] || ''].join(' '));
-  if (text.includes(norm(q))) return true;
-  const d = digits(q);
-  if (d) {
+  if (searchText(c).includes(nq)) return true;
+  if (dq) {
     const nums = [c.total, c.deposit, c.total - c.deposit].map(String);
-    if (nums.some((n) => n.includes(d))) return true;
+    if (nums.some((n) => n.includes(dq))) return true;
   }
   return false;
 }
 
 document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => {
   tab = b.dataset.tab;
+  shown = PAGE;
   render();
 }));
 
 // Bộ lọc: sắp xếp + ngày cụ thể
-$('sortDir').addEventListener('change', render);
-$('dateFilter').addEventListener('input', render);
-$('dateFilter').addEventListener('change', render);
+function refilter() { shown = PAGE; render(); }
+$('sortDir').addEventListener('change', refilter);
+$('dateFilter').addEventListener('input', refilter);
+$('dateFilter').addEventListener('change', refilter);
 $('clearFilters').addEventListener('click', () => {
   $('sortDir').value = 'desc';
   $('dateFilter').value = '';
-  render();
+  refilter();
 });
+let searchTimer;
+$('search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(refilter, 160); });
+$('moreBtn').addEventListener('click', () => { shown += PAGE; render(); });
 
 function render() {
   const q = $('search').value.trim();
+  const nq = norm(q);
+  const dq = digits(q);
   const day = $('dateFilter').value; // yyyy-mm-dd hoặc rỗng
   const dir = $('sortDir').value === 'asc' ? 1 : -1;
 
   const by = { pending: [], ordered: [], arrived: [] };
   customers
-    .filter((c) => matches(c, q) && (!day || dateKey(when(c, st(c))) === day))
+    .filter((c) => matches(c, q, nq, dq) && (!day || dateKey(when(c, st(c))) === day))
     .forEach((c) => by[st(c)].push(c));
   Object.keys(by).forEach((k) => {
     by[k].sort((a, b) => dir * String(when(a, k)).localeCompare(String(when(b, k))));
@@ -828,10 +918,16 @@ function render() {
   if (!list.length) {
     const text = totalInTab ? 'Không có khách hàng nào khớp với từ khóa hoặc ngày đã chọn.' : EMPTY_MSG[tab];
     $('rows').innerHTML = `<tr><td colspan="7" class="empty">${esc(text)}</td></tr>`;
+    $('moreWrap').hidden = true;
     return;
   }
 
-  $('rows').innerHTML = list.map((c) => {
+  const visible = list.slice(0, shown);
+  const rest = list.length - visible.length;
+  $('moreWrap').hidden = rest <= 0;
+  if (rest > 0) $('moreBtn').textContent = `Hiện thêm ${Math.min(PAGE, rest)} (còn ${rest})`;
+
+  $('rows').innerHTML = visible.map((c) => {
     const s = st(c);
     const id = esc(c.id);
     const plat = PLAT_NAME[c.platform] ? c.platform : '';
@@ -877,7 +973,6 @@ $('rows').addEventListener('click', (e) => {
   if (b.dataset.del) del(b.dataset.del);
   if (b.dataset.status) setStatus(b.dataset.id, b.dataset.status);
 });
-$('search').addEventListener('input', render);
 
 // ---- Sao lưu / nhập dữ liệu cũ ----
 $('exportBtn').addEventListener('click', () => {
@@ -895,6 +990,7 @@ $('importFile').addEventListener('change', async (e) => {
   const f = e.target.files[0];
   e.target.value = '';
   if (!f || working) return;
+  if (pendingOps > 0) { toast('Đang đồng bộ thay đổi, vui lòng chờ một chút rồi nhập lại.'); return; }
   let rows;
   try {
     rows = JSON.parse(await f.text());
@@ -910,16 +1006,22 @@ $('importFile').addEventListener('change', async (e) => {
     const d = await call('import', { rows });
     toast(`Đã nhập ${d.added} khách hàng`);
     working = false;
-    await load();
+    await load({ fresh: true, force: true });
   } catch (err) { handleErr(err); }
   finally { working = false; }
 });
 
-// ---- Khởi động ----
+// ---- Khởi động: hiện ngay danh sách đã lưu trên máy, rồi cập nhật ngầm ----
 updatePay();
 updateClock();
 password = storeGet();
-if (password) load(); else showLogin('');
+if (password) {
+  const cached = cacheLoad();
+  if (cached) { customers = sortList(cached); render(); updateClock(); }
+  load({ silent: !!cached });
+} else {
+  showLogin('');
+}
 </script>
 </body>
 </html>
