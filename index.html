@@ -110,13 +110,6 @@
     border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; min-width: 175px;
   }
 
-  .tabs { display: flex; gap: 8px; margin: 0 0 12px; flex-wrap: wrap; }
-  .tab {
-    font: inherit; font-weight: 600; cursor: pointer; padding: 9px 18px; border-radius: 10px;
-    border: 1.5px solid var(--line); background: transparent; color: var(--muted);
-  }
-  .tab[aria-selected=true] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-
   .tablebox { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
   table { width: 100%; border-collapse: collapse; min-width: 1020px; }
   th, td { text-align: left; padding: 13px 14px; vertical-align: top; border-bottom: 1px solid var(--line); }
@@ -197,8 +190,6 @@
     .fl { flex: 1 1 calc(50% - 8px); }
     .fl select, .fl input[type=date] { width: 100%; min-width: 0; font-size: 16px; }
     #clearFilters { flex: 1 1 100%; min-height: 40px; font-size: 14.5px; }
-    .tabs { flex-wrap: nowrap; gap: 6px; }
-    .tab { flex: 1; padding: 11px 4px; font-size: 13.5px; white-space: nowrap; }
 
     .tablebox { overflow: visible; border: none; border-radius: 0; background: transparent; }
     table, tbody { display: block; width: 100%; min-width: 0; }
@@ -350,6 +341,13 @@
   </div>
 
   <div class="filters">
+    <label class="fl"><span>Trạng thái</span>
+      <select id="statusFilter">
+        <option value="pending">Chưa order (0)</option>
+        <option value="ordered">Đã order (0)</option>
+        <option value="arrived">Hàng về (0)</option>
+      </select>
+    </label>
     <label class="fl"><span>Sắp xếp</span>
       <select id="sortDir">
         <option value="desc">Mới nhất trước</option>
@@ -360,12 +358,6 @@
       <input type="date" id="dateFilter">
     </label>
     <button class="mini" id="clearFilters" type="button" hidden>Xóa lọc</button>
-  </div>
-
-  <div class="tabs" role="tablist">
-    <button class="tab" id="tabPending" role="tab" type="button" data-tab="pending" aria-selected="true">Chưa order (0)</button>
-    <button class="tab" id="tabOrdered" role="tab" type="button" data-tab="ordered" aria-selected="false">Đã order (0)</button>
-    <button class="tab" id="tabArrived" role="tab" type="button" data-tab="arrived" aria-selected="false">Hàng về (0)</button>
   </div>
 
   <div class="tablebox">
@@ -467,17 +459,23 @@ function clearDirty() { try { localStorage.removeItem('kh_dirty'); } catch {} }
 function isDirty() { try { return localStorage.getItem('kh_dirty') === '1'; } catch { return false; } }
 
 // ---- Gọi Google Apps Script ----
-async function call(action, payload) {
+async function call(action, payload, timeoutMs) {
   if (!SCRIPT_URL || SCRIPT_URL.includes('XXXX')) throw new Error('Chưa cấu hình SCRIPT_URL trong file index.html');
+  const ctrl = timeoutMs ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
   let res;
   try {
     res = await fetch(SCRIPT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({ token: password, action, ...(payload || {}) }),
+      signal: ctrl ? ctrl.signal : undefined,
     });
   } catch {
+    if (ctrl && ctrl.signal.aborted) throw new Error('Máy chủ phản hồi quá chậm. Bấm "Tải lại" để đồng bộ dữ liệu.');
     throw new Error('Không kết nối được tới Google. Kiểm tra mạng hoặc SCRIPT_URL.');
+  } finally {
+    if (timer) clearTimeout(timer);
   }
   let data;
   try { data = await res.json(); }
@@ -709,7 +707,7 @@ $('saveBtn').addEventListener('click', async () => {
   $('msg').textContent = '';
   try {
     markDirty();
-    const d = await call('save', { row });
+    const d = await call('save', { row }, 30000);
     const i = customers.findIndex((x) => x.id === d.row.id);
     if (i >= 0) customers[i] = d.row; else customers.push(d.row);
     customers = sortList(customers);
@@ -761,7 +759,7 @@ async function del(id) {
   working = true;
   try {
     markDirty();
-    await call('delete', { id });
+    await call('delete', { id }, 30000);
     customers = customers.filter((x) => x.id !== id);
     cacheSet(customers);
     clearDirty();
@@ -772,7 +770,7 @@ async function del(id) {
   finally { working = false; }
 }
 
-// Chuyển khách giữa 3 danh sách: pending / ordered / arrived
+// Đổi trạng thái khách: pending / ordered / arrived (sheet sửa tại chỗ, không chuyển dòng)
 async function setStatus(id, status) {
   if (working) return;
   const c = customers.find((x) => x.id === id);
@@ -782,7 +780,7 @@ async function setStatus(id, status) {
   if (btn) { btn.disabled = true; btn.textContent = 'Đang lưu...'; }
   markDirty();
   try {
-    const d = await call('status', { id, status }); // chờ sheet ghi xong, trả về dòng đã lưu
+    const d = await call('status', { id, status }, 30000); // chờ sheet sửa tại chỗ xong, trả về dòng đã lưu rồi mới đổi web
     const i = customers.findIndex((x) => x.id === id);
     if (i >= 0) customers[i] = d.row;
     cacheSet(customers);
@@ -814,10 +812,7 @@ function matches(c, q) {
   return false;
 }
 
-document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => {
-  tab = b.dataset.tab;
-  render();
-}));
+$('statusFilter').addEventListener('change', (e) => { tab = e.target.value; render(); });
 
 // Bộ lọc: sắp xếp + ngày cụ thể
 $('sortDir').addEventListener('change', render);
@@ -845,12 +840,11 @@ function render() {
   $('dateLbl').textContent = DATE_LABEL[tab];
   $('clearFilters').hidden = !(day || dir === 1);
 
-  $('tabPending').textContent = `Chưa order (${by.pending.length})`;
-  $('tabOrdered').textContent = `Đã order (${by.ordered.length})`;
-  $('tabArrived').textContent = `Hàng về (${by.arrived.length})`;
-  $('tabPending').setAttribute('aria-selected', String(tab === 'pending'));
-  $('tabOrdered').setAttribute('aria-selected', String(tab === 'ordered'));
-  $('tabArrived').setAttribute('aria-selected', String(tab === 'arrived'));
+  const sf = $('statusFilter');
+  sf.options[0].textContent = `Chưa order (${by.pending.length})`;
+  sf.options[1].textContent = `Đã order (${by.ordered.length})`;
+  sf.options[2].textContent = `Hàng về (${by.arrived.length})`;
+  sf.value = tab;
 
   const list = by[tab];
   const totalInTab = customers.filter((c) => st(c) === tab).length;
