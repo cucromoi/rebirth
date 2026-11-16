@@ -424,6 +424,8 @@ const toNum = (s) => Number(digits(s)) || 0;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd');
 const sortList = (list) => list.slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+// giữ bản cuối của mỗi ID (phòng khi đọc đúng lúc một khách đang được chuyển bảng)
+const dedupe = (rows) => Array.from(new Map(rows.map((r) => [r.id, r])).values());
 const st = (c) => (c.status === 'pending' || c.status === 'ordered' || c.status === 'arrived') ? c.status : (c.ordered ? 'ordered' : 'pending');
 
 // Ngày (giờ địa phương) dạng yyyy-mm-dd để so với ô chọn ngày
@@ -501,7 +503,7 @@ async function doLogin() {
   try {
     const d = await call('list');
     storeSet(pw, $('remember').checked);
-    customers = sortList(d.rows);
+    customers = sortList(dedupe(d.rows));
     lastLoad = Date.now();
     $('login').hidden = true;
     $('pw').value = '';
@@ -524,7 +526,7 @@ async function load() {
   $('count').textContent = 'Đang tải dữ liệu...';
   try {
     const d = await call('list');
-    customers = sortList(d.rows);
+    customers = sortList(dedupe(d.rows));
     lastLoad = Date.now();
     render();
     updateClock();
@@ -749,17 +751,31 @@ async function del(id) {
 // Chuyển khách giữa 3 danh sách: pending / ordered / arrived
 async function setStatus(id, status) {
   if (working) return;
-  const c = customers.find((x) => x.id === id);
-  if (!c) return;
+  const i = customers.findIndex((x) => x.id === id);
+  if (i < 0) return;
+  const prev = customers[i];
+  // đổi ngay trên màn hình, không chờ mạng; sẽ hoàn tác nếu gọi API lỗi
+  const now = new Date().toISOString();
+  customers[i] = Object.assign({}, prev, {
+    status,
+    ordered: status !== 'pending',
+    orderedAt: status === 'pending' ? null : (prev.orderedAt || now),
+    arrivedAt: status === 'arrived' ? now : null,
+  });
   working = true;
+  render();
+  toast(STATUS_MSG[status](prev.name));
   try {
     const d = await call('status', { id, status });
-    const i = customers.findIndex((x) => x.id === id);
-    if (i >= 0) customers[i] = d.row;
+    const j = customers.findIndex((x) => x.id === id);
+    if (j >= 0) customers[j] = d.row;
     render();
-    toast(STATUS_MSG[status](c.name));
-  } catch (e) { handleErr(e); }
-  finally { working = false; }
+  } catch (e) {
+    const j = customers.findIndex((x) => x.id === id);
+    if (j >= 0) customers[j] = prev;
+    render();
+    handleErr(e);
+  } finally { working = false; }
 }
 
 // ---- Danh sách ----
