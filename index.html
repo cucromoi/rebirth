@@ -461,6 +461,10 @@ function cacheGet() {
   } catch { return null; }
 }
 function cacheSet(rows) { try { localStorage.setItem(DATA_KEY, JSON.stringify(rows)); } catch {} }
+// có thao tác ghi chưa được xác nhận => lần mở / đăng nhập sau bắt buộc đồng bộ lại từ sheet
+function markDirty() { try { localStorage.setItem('kh_dirty', '1'); } catch {} }
+function clearDirty() { try { localStorage.removeItem('kh_dirty'); } catch {} }
+function isDirty() { try { return localStorage.getItem('kh_dirty') === '1'; } catch { return false; } }
 
 // ---- Gọi Google Apps Script ----
 async function call(action, payload) {
@@ -510,7 +514,7 @@ async function doLogin() {
   try {
     await call('auth'); // chỉ xác thực mật khẩu, không tải dữ liệu => nhanh
     storeSet(pw, $('remember').checked);
-    const cached = cacheGet();
+    const cached = isDirty() ? null : cacheGet();
     if (cached) {
       customers = sortList(cached); // đã có cache: vào ngay, không gọi list
     } else {
@@ -518,6 +522,7 @@ async function doLogin() {
       const d = await call('list'); // lần đầu trên thiết bị: tải một lần rồi lưu cache
       customers = sortList(d.rows);
       cacheSet(customers);
+      clearDirty();
     }
     $('login').hidden = true;
     $('pw').value = '';
@@ -543,6 +548,7 @@ async function load() {
     const d = await call('list');
     customers = sortList(d.rows);
     cacheSet(customers);
+    clearDirty();
     render();
     updateClock();
   } catch (e) {
@@ -702,11 +708,13 @@ $('saveBtn').addEventListener('click', async () => {
   $('saveBtn').textContent = 'Đang lưu...';
   $('msg').textContent = '';
   try {
+    markDirty();
     const d = await call('save', { row });
     const i = customers.findIndex((x) => x.id === d.row.id);
     if (i >= 0) customers[i] = d.row; else customers.push(d.row);
     customers = sortList(customers);
     cacheSet(customers);
+    clearDirty();
     flashId = d.row.id;
     if (isNew) tab = 'pending';
     resetForm();
@@ -752,9 +760,11 @@ async function del(id) {
   if (!c || !confirm(`Xóa khách hàng "${c.name}"? Thao tác này không hoàn tác được.`)) return;
   working = true;
   try {
+    markDirty();
     await call('delete', { id });
     customers = customers.filter((x) => x.id !== id);
     cacheSet(customers);
+    clearDirty();
     if (editId === id) resetForm();
     render();
     toast('Đã xóa khách hàng');
@@ -768,14 +778,18 @@ async function setStatus(id, status) {
   const c = customers.find((x) => x.id === id);
   if (!c) return;
   working = true;
+  const btn = document.querySelector(`button[data-status="${status}"][data-id="${CSS.escape(id)}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Đang lưu...'; }
+  markDirty();
   try {
     const d = await call('status', { id, status }); // chờ sheet ghi xong, trả về dòng đã lưu
     const i = customers.findIndex((x) => x.id === id);
     if (i >= 0) customers[i] = d.row;
     cacheSet(customers);
+    clearDirty();
     render();
     toast(STATUS_MSG[status](c.name));
-  } catch (e) { handleErr(e); }
+  } catch (e) { render(); handleErr(e); }
   finally { working = false; }
 }
 
@@ -924,6 +938,7 @@ $('importFile').addEventListener('change', async (e) => {
   working = true;
   toast('Đang nhập dữ liệu...');
   try {
+    markDirty();
     const d = await call('import', { rows });
     toast(`Đã nhập ${d.added} khách hàng`);
     working = false;
@@ -937,7 +952,7 @@ updatePay();
 updateClock();
 password = storeGet();
 if (password) {
-  const cached = cacheGet();
+  const cached = isDirty() ? null : cacheGet();
   if (cached) { customers = sortList(cached); render(); } // đã có cache: mở tức thì, không gọi server
   else load(); // lần đầu trên thiết bị này: tải toàn bộ một lần rồi lưu cache
 } else showLogin('');
