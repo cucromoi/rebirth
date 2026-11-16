@@ -508,10 +508,17 @@ async function doLogin() {
   $('loginBtn').disabled = true;
   $('loginMsg').textContent = 'Đang kiểm tra...';
   try {
-    const d = await call('list');
+    await call('auth'); // chỉ xác thực mật khẩu, không tải dữ liệu => nhanh
     storeSet(pw, $('remember').checked);
-    customers = sortList(d.rows);
-    cacheSet(customers);
+    const cached = cacheGet();
+    if (cached) {
+      customers = sortList(cached); // đã có cache: vào ngay, không gọi list
+    } else {
+      $('loginMsg').textContent = 'Đang tải dữ liệu lần đầu...';
+      const d = await call('list'); // lần đầu trên thiết bị: tải một lần rồi lưu cache
+      customers = sortList(d.rows);
+      cacheSet(customers);
+    }
     $('login').hidden = true;
     $('pw').value = '';
     $('loginMsg').textContent = '';
@@ -519,7 +526,8 @@ async function doLogin() {
     updateClock();
   } catch (e) {
     password = '';
-    $('loginMsg').textContent = e.auth ? 'Sai mật khẩu' : e.message;
+    $('loginMsg').textContent = e.auth ? 'Sai mật khẩu'
+      : (e.message === 'Hành động không hợp lệ' ? 'Backend chưa cập nhật: deploy Code.gs mới (New version) rồi thử lại.' : e.message);
   } finally {
     $('loginBtn').disabled = false;
   }
