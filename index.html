@@ -39,9 +39,12 @@
   h1 { font-size: 26px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
   h2 { font-size: 18px; font-weight: 600; margin: 0; }
   .top { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
-  .top-actions { display: flex; gap: 8px; align-items: center; }
+  .top-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .sync { color: var(--muted); font-size: 13px; }
   .sync:empty { display: none; }
+  .sync.bad { color: var(--danger); font-weight: 600; }
+  .mini.retry { border-color: var(--danger); color: var(--danger); font-weight: 600; }
+  .mini.retry[hidden] { display: none; }
 
   .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
   .grid { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; }
@@ -282,6 +285,7 @@
     <h1>Quản lý khách hàng</h1>
     <div class="top-actions">
       <span class="sync" id="syncState" aria-live="polite"></span>
+      <button class="mini retry" id="retryBtn" type="button" hidden>Thử lại</button>
       <button class="mini" id="refreshBtn" type="button">Tải lại</button>
       <button class="mini" id="logoutBtn" type="button">Đăng xuất</button>
     </div>
@@ -485,21 +489,27 @@ function cacheSave() { try { const a = storeArea(); if (a) a.setItem(CACHE_KEY, 
 function cacheLoad() { try { const a = storeArea(); const s = a && a.getItem(CACHE_KEY); return s ? JSON.parse(s) : null; } catch { return null; } }
 
 // ---- Gọi Google Apps Script ----
+const TIMEOUT_MS = 45000; // không bao giờ chờ vô hạn: quá 45s thì báo lỗi để bấm Thử lại
 async function call(action, payload) {
   if (!SCRIPT_URL || SCRIPT_URL.includes('XXXX')) throw new Error('Chưa cấu hình SCRIPT_URL trong file index.html');
-  let res;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  let data;
   try {
-    res = await fetch(SCRIPT_URL, {
+    const res = await fetch(SCRIPT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({ token: password, action, ...(payload || {}) }),
+      signal: ctl.signal,
     });
-  } catch {
+    data = await res.json();
+  } catch (e) {
+    if (ctl.signal.aborted) throw new Error('Google phản hồi quá chậm (45s). Bấm "Thử lại" để gửi lại.');
+    if (e instanceof SyntaxError) throw new Error('Google không trả về dữ liệu hợp lệ. Kiểm tra bản triển khai: quyền "Bất kỳ ai" và URL kết thúc bằng /exec.');
     throw new Error('Không kết nối được tới Google. Kiểm tra mạng hoặc SCRIPT_URL.');
+  } finally {
+    clearTimeout(timer);
   }
-  let data;
-  try { data = await res.json(); }
-  catch { throw new Error('Google không trả về dữ liệu hợp lệ. Kiểm tra bản triển khai: quyền "Bất kỳ ai" và URL kết thúc bằng /exec.'); }
   if (!data.ok) {
     const err = new Error(data.error || 'Có lỗi xảy ra');
     err.auth = data.error === 'Sai mật khẩu';
@@ -515,9 +525,27 @@ function handleErr(e) {
 }
 
 // ---- Hàng đợi lưu nền: thay đổi hiện ngay, lưu lên Google lần lượt theo thứ tự ----
-function showSync() { $('syncState').textContent = pendingOps > 0 ? `Đang đồng bộ… (${pendingOps})` : ''; }
+let failed = []; // thay đổi chưa gửi được: giữ lại trên màn hình và cho bấm Thử lại
+
+function showSync() {
+  const el = $('syncState');
+  const retry = $('retryBtn');
+  if (pendingOps > 0) {
+    el.textContent = `Đang đồng bộ… (${pendingOps})`;
+    el.classList.remove('bad');
+    retry.hidden = true;
+  } else if (failed.length) {
+    el.textContent = `${failed.length} thay đổi chưa lưu`;
+    el.classList.add('bad');
+    retry.hidden = false;
+  } else {
+    el.textContent = '';
+    el.classList.remove('bad');
+    retry.hidden = true;
+  }
+}
 window.addEventListener('beforeunload', (e) => {
-  if (pendingOps > 0) { e.preventDefault(); e.returnValue = ''; }
+  if (pendingOps > 0 || failed.length) { e.preventDefault(); e.returnValue = ''; }
 });
 
 function enqueue(task) {
@@ -527,17 +555,27 @@ function enqueue(task) {
     try {
       await task();
     } catch (e) {
+      // Không tải lại dữ liệu ở đây: việc đó sẽ nối thêm một lượt đọc vào hàng đợi
+      // và giữ badge "Đang đồng bộ" treo lâu hơn. Giữ thay đổi tại chỗ, cho thử lại.
+      failed.push(task);
       if (e.auth) handleErr(e);
-      else {
-        toast('Không lưu được thay đổi: ' + e.message + '. Đang tải lại dữ liệu…');
-        await load({ silent: true, force: true });
-      }
+      else toast('Chưa lưu được: ' + e.message);
     } finally {
       pendingOps--;
       showSync();
     }
   });
 }
+
+// Gửi lại an toàn: save ghi đè theo ID, status/delete không tìm thấy thì bỏ qua
+function retryFailed() {
+  if (!failed.length || pendingOps > 0) return;
+  const again = failed;
+  failed = [];
+  showSync();
+  again.forEach(enqueue);
+}
+$('retryBtn').addEventListener('click', retryFailed);
 
 function touch() { rev++; cacheSave(); }
 function upsertLocal(row) {
@@ -584,22 +622,26 @@ $('pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); }
 $('logoutBtn').addEventListener('click', () => { customers = []; render(); showLogin(''); });
 $('refreshBtn').addEventListener('click', () => {
   if (pendingOps > 0) { toast('Đang đồng bộ thay đổi, vui lòng chờ một chút…'); return; }
-  load({ fresh: true }); // bỏ qua bộ nhớ đệm, đọc thẳng từ Sheet
+  if (failed.length && !confirm(`Còn ${failed.length} thay đổi chưa lưu. Tải lại sẽ bỏ chúng. Tiếp tục?`)) return;
+  load({ fresh: true, force: true }); // bỏ qua bộ nhớ đệm, đọc thẳng từ Sheet
 });
 
 // opts: silent (không hiện "Đang tải"), fresh (đọc thẳng từ Sheet), force (bỏ qua kiểm tra thay đổi đang chờ)
 async function load(opts) {
   const o = opts || {};
-  if (!o.force && pendingOps > 0) return;
+  // Có thay đổi chưa lưu thì không được ghi đè bằng dữ liệu trên Google
+  if (!o.force && (pendingOps > 0 || failed.length)) return;
   const r0 = rev;
   if (!o.silent) $('count').textContent = 'Đang tải dữ liệu...';
   try {
     const d = await call('list', { fresh: !!o.fresh });
-    if (!o.force && (rev !== r0 || pendingOps > 0)) { render(); return; } // trong lúc tải bạn đã sửa gì đó: bỏ kết quả cũ
+    if (!o.force && (rev !== r0 || pendingOps > 0 || failed.length)) { render(); return; }
     customers = sortList(d.rows);
+    failed = [];
     lastLoad = Date.now();
     cacheSave();
     render();
+    showSync();
     updateClock();
   } catch (e) {
     if (!o.silent || o.force) $('count').textContent = 'Không tải được dữ liệu — dữ liệu hiển thị có thể chưa mới nhất';
@@ -990,7 +1032,7 @@ $('importFile').addEventListener('change', async (e) => {
   const f = e.target.files[0];
   e.target.value = '';
   if (!f || working) return;
-  if (pendingOps > 0) { toast('Đang đồng bộ thay đổi, vui lòng chờ một chút rồi nhập lại.'); return; }
+  if (pendingOps > 0 || failed.length) { toast('Còn thay đổi chưa lưu xong, vui lòng chờ một chút rồi nhập lại.'); return; }
   let rows;
   try {
     rows = JSON.parse(await f.text());
